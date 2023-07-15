@@ -1,0 +1,12 @@
+FROM nginx:mainline
+
+ARG OTEL_VERSION
+
+# COPY web-nginx.conf
+COPY ./nginx.conf /etc/nginx/conf/nginx.conf
+COPY otel_nginx.toml /etc/nginx/conf/otel_nginx.toml
+COPY otel_ngx_module-${OTEL_VERSION}.so /usr/local/openresty/nginx/lib/otel_ngx_module.so
+
+COPY ./dist /var/www/lcweb/public/
+
+CMD ["/usr/bin/nginx", "-g", "daemon off;"]

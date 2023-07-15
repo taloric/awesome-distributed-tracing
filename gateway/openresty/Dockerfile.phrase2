@@ -1,0 +1,133 @@
+ARG WEBSERVER_IMAGE="openresty-integrated-otel"
+ARG WEBSERVER_TAG="debian"
+
+FROM ${OPENRESTY_IMAGE}:${OPENRESTY_IMAGE_TAG}
+
+# define version for --build-args
+ARG OPENTELEMETRY_VERSION=v1.4.0
+ARG GRPC_VERSION=v1.46.3
+
+# add aliyun mirrors (in cn)
+# RUN echo 'deb http://mirrors.aliyun.com/debian/ buster main non-free contrib \n\
+# deb http://mirrors.aliyun.com/debian-security buster/updates main \n\
+# deb http://mirrors.aliyun.com/debian/ buster-updates main non-free contrib \n\
+# deb http://mirrors.aliyun.com/debian/ buster-backports main non-free contrib \n' \
+# > /etc/apt/sources.list
+
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        vim \
+        lsof \
+        dnsutils \
+        tzdata \
+        git \
+        build-essential \
+        libgrpc-dev \
+        libcurl4-openssl-dev \
+        libprotobuf-dev \
+        libc-ares-dev \
+        libre2-dev \
+        libssl-dev \
+        autoconf \
+        libtool \
+        pkg-config \
+        gcc \
+        lsb-release \
+        apt-transport-https \
+        software-properties-common \
+        cmake \
+        wget \
+        && ln -sf /usr/lib/x86_64-linux-gnu/libcurl.so.4 /usr/lib/libcurl.so.4 \
+    && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+
+# install grpc
+RUN git clone --shallow-submodules --depth 1 --recurse-submodules -b ${GRPC_VERSION} \ 
+        https://github.com/grpc/grpc \
+    && cd grpc \
+    && mkdir -p cmake/build \
+    && cd cmake/build \
+    && cmake \
+        -DgRPC_INSTALL=ON \
+        -DgRPC_BUILD_TESTS=OFF \
+        -DCMAKE_INSTALL_PREFIX=/install \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DgRPC_BUILD_GRPC_NODE_PLUGIN=OFF \
+        -DgRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN=OFF \
+        -DgRPC_BUILD_GRPC_PHP_PLUGIN=OFF \
+        -DgRPC_BUILD_GRPC_PHP_PLUGIN=OFF \
+        -DgRPC_BUILD_GRPC_PYTHON_PLUGIN=OFF \
+        -DgRPC_BUILD_GRPC_RUBY_PLUGIN=OFF \
+        ../.. \
+    && make \
+    && make install
+
+# build otel-cpp
+RUN git clone --shallow-submodules --depth 1 --recurse-submodules -b ${OPENTELEMETRY_VERSION} \
+      https://github.com/open-telemetry/opentelemetry-cpp.git \
+      && cd opentelemetry-cpp \
+      && mkdir build \
+      && cd build \
+      && cmake -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/install \
+        -DCMAKE_PREFIX_PATH=/install \
+        -DWITH_OTLP=ON \
+        -DWITH_OTLP_GRPC=ON \
+        -DWITH_OTLP_HTTP=OFF \
+        -DBUILD_TESTING=OFF \
+        -DWITH_EXAMPLES=OFF \
+        -DWITH_ABSEIL=ON \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        .. \
+      && make \
+      && make install
+
+# build otel-cpp-contrib-nginx-module
+RUN git clone https://github.com/open-telemetry/opentelemetry-cpp-contrib.git \
+      && cd opentelemetry-cpp-contrib/instrumentation/nginx \
+      && mkdir build \
+      && cd build \
+      && cmake -DCMAKE_BUILD_TYPE=Release \
+        -DNGINX_BIN=/usr/local/openresty/bin/openresty \
+        -DCMAKE_PREFIX_PATH=/install \
+        -DCMAKE_INSTALL_PREFIX=/usr/local/openresty/nginx/modules \
+        -DCURL_LIBRARY=/usr/lib/libcurl.so.4 \
+        .. \
+      && make \
+      && make install
+
+# clean dependencies
+RUN DEBIAN_FRONTEND=noninteractive apt-get remove -y --purge \
+        git \
+        build-essential \
+        libgrpc-dev \
+        libcurl4-openssl-dev \
+        libprotobuf-dev \
+        libc-ares-dev \
+        libre2-dev \
+        libssl-dev \
+        autoconf \
+        libtool \
+        pkg-config \
+        gcc \
+        lsb-release \
+        apt-transport-https \
+        software-properties-common \
+        cmake \
+        wget \
+    && DEBIAN_FRONTEND=noninteractive apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get autoremove -y
+
+FROM ${OPENRESTY_IMAGE}:${OPENRESTY_IMAGE_TAG}
+
+# COPY otel_module
+COPY --from=build /usr/local/openresty/nginx/modules /usr/local/openresty/nginx/modules
+COPY otel_nginx.toml /usr/local/openresty/nginx/conf/otel_nginx.toml
+
+# COPY nginx.conf
+COPY ./nginx.conf /usr/local/openresty/nginx/conf/nginx.conf
+
+COPY ./dist /var/www/public/
+
+CMD ["/usr/local/openresty/bin/openresty", "-g", "daemon off;"]
+
+STOPSIGNAL SIGQUIT

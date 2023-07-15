@@ -1,0 +1,7 @@
+{
+    "environment": "release",
+    "service": "your-frontend-service-name",
+    "operation_name_override": "your-service-operation-name",
+    "agent_host": "your-datadog-agent-host",
+    "agent_port": 8126
+}

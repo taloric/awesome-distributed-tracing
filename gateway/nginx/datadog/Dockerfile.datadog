@@ -1,0 +1,36 @@
+FROM nginx:1.20
+
+# add aliyun mirrors (in cn)
+# RUN echo 'deb http://mirrors.aliyun.com/debian/ buster main non-free contrib \n\
+# deb http://mirrors.aliyun.com/debian-security buster/updates main \n\
+# deb http://mirrors.aliyun.com/debian/ buster-updates main non-free contrib \n\
+# deb http://mirrors.aliyun.com/debian/ buster-backports main non-free contrib \n' \
+# > /etc/apt/sources.list \
+# && apt-get -qq update
+
+RUN apt-get -qq install -y --no-install-recommends wget tar
+
+RUN get_latest_release() { \
+  wget -qO- "https://api.github.com/repos/$1/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'; \
+  } && \
+  NGINX_VERSION=`nginx -v 2>&1 > /dev/null | sed -E "s/^.*nginx\/(.*)/\\1/"`&& \
+  OPENTRACING_NGINX_VERSION="$(get_latest_release opentracing-contrib/nginx-opentracing)" && \
+  DD_OPENTRACING_CPP_VERSION="$(get_latest_release DataDog/dd-opentracing-cpp)" && \
+  \
+  wget https://github.com/opentracing-contrib/nginx-opentracing/releases/download/${OPENTRACING_NGINX_VERSION}/linux-amd64-nginx-${NGINX_VERSION}-ot16-ngx_http_module.so.tgz && \
+  NGINX_MODULES=/etc/nginx/modules && \
+  tar zxvf linux-amd64-nginx-${NGINX_VERSION}-ot16-ngx_http_module.so.tgz -C "${NGINX_MODULES}" && \
+  # Install Datadog module
+  wget -O - https://github.com/DataDog/dd-opentracing-cpp/releases/download/${DD_OPENTRACING_CPP_VERSION}/linux-amd64-libdd_opentracing_plugin.so.gz | gunzip -c > /usr/local/lib/libdd_opentracing_plugin.so
+
+ENV TZ=Asia/Shanghai \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime \
+    && echo ${TZ} > /etc/timezone \
+    && dpkg-reconfigure --frontend noninteractive tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir /etc/nginx/trace && echo '{}' > /etc/nginx/trace/dd-trace.json
+RUN sed -i '/events/iload_module /etc/nginx/modules/ngx_http_opentracing_module.so;' /etc/nginx/nginx.conf
+RUN sed -i '/etc\/nginx\/conf.d/i    opentracing on;\n    opentracing_tag http_user_agent $http_user_agent;\n    opentracing_trace_locations off;\n    opentracing_load_tracer /usr/local/lib/libdd_opentracing_plugin.so /etc/nginx/trace/dd-trace.json;' /etc/nginx/nginx.conf
